@@ -2,6 +2,12 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
+from time import perf_counter
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 import numpy as np
 import uproot as up
@@ -65,7 +71,7 @@ def make_wsi_image_stack(hit_x, hit_y, hit_layer, hit_E,
     return img
 
 class LambdaWSIDataset(Dataset):
-    def __init__(self, events, z_mean=None, z_std=None):
+    def __init__(self, events, z_mean=None, z_std=None, cache_images=False, progress_desc=None):
         """
         events should be a list of dictionaries.
 
@@ -80,6 +86,9 @@ class LambdaWSIDataset(Dataset):
         """
 
         self.events = events
+        self.cache_images = cache_images
+        self._x_cache = None
+        self._z_cache = None
 
         z_values = np.array([ev["z_vertex"] for ev in events], dtype=np.float32)
 
@@ -90,13 +99,21 @@ class LambdaWSIDataset(Dataset):
 
         self.z_mean = z_mean
         self.z_std = z_std
+        self._z_cache = ((z_values - self.z_mean) / self.z_std).astype(np.float32)
+
+        if self.cache_images:
+            iterator = range(len(self.events))
+            if progress_desc and tqdm is not None:
+                iterator = tqdm(iterator, desc=progress_desc, leave=False)
+
+            self._x_cache = np.empty((len(self.events), 3, 20, 64, 64), dtype=np.float32)
+            for i in iterator:
+                self._x_cache[i] = self._encode_event(self.events[i])
 
     def __len__(self):
         return len(self.events)
 
-    def __getitem__(self, idx):
-        ev = self.events[idx]
-
+    def _encode_event(self, ev):
         imgs = []
 
         for name in ["gamma1", "gamma2", "neutron"]:
@@ -116,11 +133,20 @@ class LambdaWSIDataset(Dataset):
 
         # Optional but usually useful: compress dynamic range
         x = np.log1p(x)
+        return x
+
+    def __getitem__(self, idx):
+        if self._x_cache is not None:
+            z = self._z_cache[idx]
+            return torch.from_numpy(self._x_cache[idx]), torch.tensor([z], dtype=torch.float32)
+
+        ev = self.events[idx]
+        x = self._encode_event(ev)
 
         # Normalize target
-        z = np.float32((ev["z_vertex"] - self.z_mean) / self.z_std)
+        z = self._z_cache[idx]
 
-        return torch.tensor(x, dtype=torch.float32), torch.tensor([z], dtype=torch.float32)
+        return torch.from_numpy(x), torch.tensor([z], dtype=torch.float32)
 
 class SimpleWSICNN(nn.Module):
     def __init__(self):
@@ -167,32 +193,69 @@ class SimpleWSICNN(nn.Module):
 
         return z_pred
 
-def train_model(train_events, val_events, n_epochs=20, batch_size=32, lr=1e-3):
-    train_dataset = LambdaWSIDataset(train_events)
+def train_model(
+    train_events,
+    val_events,
+    n_epochs=20,
+    batch_size=32,
+    lr=1e-3,
+    show_progress=True,
+    cache_images=True,
+    num_workers=0,
+):
+    train_dataset = LambdaWSIDataset(
+        train_events,
+        cache_images=cache_images,
+        progress_desc="Precomputing train images" if show_progress else None,
+    )
 
     val_dataset = LambdaWSIDataset(
         val_events,
         z_mean=train_dataset.z_mean,
         z_std=train_dataset.z_std,
+        cache_images=cache_images,
+        progress_desc="Precomputing val images" if show_progress else None,
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    pin_memory = device == "cuda"
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
 
     model = SimpleWSICNN().to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
+    print(f"Training on {device}", flush=True)
+    if show_progress and tqdm is None:
+        print("tqdm is not installed; falling back to epoch-only logging.", flush=True)
+
     for epoch in range(n_epochs):
+        epoch_start = perf_counter()
         model.train()
         train_loss = 0.0
 
-        for x, z_true in train_loader:
-            x = x.to(device)
-            z_true = z_true.to(device)
+        train_iter = train_loader
+        if show_progress and tqdm is not None:
+            train_iter = tqdm(train_loader, desc=f"Epoch {epoch+1:03d}/{n_epochs:03d} train", leave=False)
+
+        for x, z_true in train_iter:
+            x = x.to(device, non_blocking=pin_memory)
+            z_true = z_true.to(device, non_blocking=pin_memory)
 
             optimizer.zero_grad()
 
@@ -204,24 +267,39 @@ def train_model(train_events, val_events, n_epochs=20, batch_size=32, lr=1e-3):
 
             train_loss += loss.item() * x.size(0)
 
+            if show_progress and tqdm is not None:
+                train_iter.set_postfix(loss=f"{loss.item():.5f}")
+
         train_loss /= len(train_dataset)
 
         model.eval()
         val_loss = 0.0
 
         with torch.no_grad():
-            for x, z_true in val_loader:
-                x = x.to(device)
-                z_true = z_true.to(device)
+            val_iter = val_loader
+            if show_progress and tqdm is not None:
+                val_iter = tqdm(val_loader, desc=f"Epoch {epoch+1:03d}/{n_epochs:03d} val", leave=False)
+
+            for x, z_true in val_iter:
+                x = x.to(device, non_blocking=pin_memory)
+                z_true = z_true.to(device, non_blocking=pin_memory)
 
                 z_pred = model(x)
                 loss = loss_fn(z_pred, z_true)
 
                 val_loss += loss.item() * x.size(0)
 
-        val_loss /= len(val_dataset)
+                if show_progress and tqdm is not None:
+                    val_iter.set_postfix(loss=f"{loss.item():.5f}")
 
-        print(f"Epoch {epoch+1:03d} | train loss = {train_loss:.5f} | val loss = {val_loss:.5f}")
+        val_loss /= len(val_dataset)
+        epoch_seconds = perf_counter() - epoch_start
+
+        print(
+            f"Epoch {epoch+1:03d} | train loss = {train_loss:.5f} | "
+            f"val loss = {val_loss:.5f} | time = {epoch_seconds:.1f}s",
+            flush=True,
+        )
 
     return model, train_dataset.z_mean, train_dataset.z_std
 
@@ -294,4 +372,3 @@ def draw_zdc_box(ax):
     ax.plot([x1, x1], [y0, y1], "k--", linewidth=1)
     ax.plot([x1, x0], [y1, y1], "k--", linewidth=1)
     ax.plot([x0, x0], [y1, y0], "k--", linewidth=1)
-

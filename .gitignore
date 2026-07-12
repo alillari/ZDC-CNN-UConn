@@ -1,0 +1,48 @@
+# Python caches and build output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local tool/session metadata
+.agents/
+.codex/
+
+# Detector data and generated analysis artifacts
+*.root
+*.pdf
+data/
+datasets/
+outputs/
+results/
+runs/
+logs/
+checkpoints/
+models/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/

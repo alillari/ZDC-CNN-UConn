@@ -33,7 +33,7 @@ def get_gpu_temperature_c():
 
 def wait_for_gpu_temperature(target_temp_c, sleep_seconds=15):
     if target_temp_c is None:
-        return
+        return None
 
     temp_c = get_gpu_temperature_c()
     while temp_c is not None and temp_c > target_temp_c:
@@ -44,6 +44,8 @@ def wait_for_gpu_temperature(target_temp_c, sleep_seconds=15):
         )
         sleep(sleep_seconds)
         temp_c = get_gpu_temperature_c()
+
+    return temp_c
 
 import numpy as np
 import uproot as up
@@ -239,9 +241,9 @@ def train_model(
     cache_images=True,
     num_workers=0,
     use_amp=True,
-    target_gpu_temp_c=None,
-    temp_check_interval=20,
-    temp_cooldown_sleep=15,
+    target_gpu_temp_c=80,
+    temp_check_interval=1,
+    temp_cooldown_sleep=30,
 ):
     train_dataset = LambdaWSIDataset(
         train_events,
@@ -285,6 +287,16 @@ def train_model(
     print(f"Training on {device}", flush=True)
     if show_progress and tqdm is None:
         print("tqdm is not installed; falling back to epoch-only logging.", flush=True)
+    if target_gpu_temp_c is not None:
+        current_temp_c = get_gpu_temperature_c()
+        if current_temp_c is None:
+            print("GPU temperature guard requested, but nvidia-smi temperature query failed.", flush=True)
+        else:
+            print(
+                f"GPU temperature guard active: target {target_gpu_temp_c:.0f}C, "
+                f"current {current_temp_c:.0f}C.",
+                flush=True,
+            )
 
     for epoch in range(n_epochs):
         epoch_start = perf_counter()
@@ -296,7 +308,7 @@ def train_model(
             train_iter = tqdm(train_loader, desc=f"Epoch {epoch+1:03d}/{n_epochs:03d} train", leave=False)
 
         for batch_idx, (x, z_true) in enumerate(train_iter):
-            if batch_idx % temp_check_interval == 0:
+            if batch_idx % max(1, temp_check_interval) == 0:
                 wait_for_gpu_temperature(target_gpu_temp_c, temp_cooldown_sleep)
 
             x = x.to(device, non_blocking=pin_memory)
@@ -327,7 +339,10 @@ def train_model(
             if show_progress and tqdm is not None:
                 val_iter = tqdm(val_loader, desc=f"Epoch {epoch+1:03d}/{n_epochs:03d} val", leave=False)
 
-            for x, z_true in val_iter:
+            for batch_idx, (x, z_true) in enumerate(val_iter):
+                if batch_idx % max(1, temp_check_interval) == 0:
+                    wait_for_gpu_temperature(target_gpu_temp_c, temp_cooldown_sleep)
+
                 x = x.to(device, non_blocking=pin_memory)
                 z_true = z_true.to(device, non_blocking=pin_memory)
 

@@ -282,7 +282,7 @@ def train_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
     amp_enabled = use_amp and device == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
     print(f"Training on {device}", flush=True)
     if show_progress and tqdm is None:
@@ -316,7 +316,7 @@ def train_model(
 
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(enabled=amp_enabled):
+            with torch.amp.autocast("cuda", enabled=amp_enabled):
                 z_pred = model(x)
                 loss = loss_fn(z_pred, z_true)
 
@@ -324,10 +324,11 @@ def train_model(
             scaler.step(optimizer)
             scaler.update()
 
-            train_loss += loss.item() * x.size(0)
+            loss_value = loss.detach().item()
+            train_loss += loss_value * x.size(0)
 
             if show_progress and tqdm is not None:
-                train_iter.set_postfix(loss=f"{loss.item():.5f}")
+                train_iter.set_postfix(loss=f"{loss_value:.5f}")
 
         train_loss /= len(train_dataset)
 
@@ -346,14 +347,15 @@ def train_model(
                 x = x.to(device, non_blocking=pin_memory)
                 z_true = z_true.to(device, non_blocking=pin_memory)
 
-                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                with torch.amp.autocast("cuda", enabled=amp_enabled):
                     z_pred = model(x)
                     loss = loss_fn(z_pred, z_true)
 
-                val_loss += loss.item() * x.size(0)
+                loss_value = loss.detach().item()
+                val_loss += loss_value * x.size(0)
 
                 if show_progress and tqdm is not None:
-                    val_iter.set_postfix(loss=f"{loss.item():.5f}")
+                    val_iter.set_postfix(loss=f"{loss_value:.5f}")
 
         val_loss /= len(val_dataset)
         epoch_seconds = perf_counter() - epoch_start

@@ -1,13 +1,49 @@
 import numpy as np
+import subprocess
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
+from time import sleep
 from time import perf_counter
 
 try:
     from tqdm.auto import tqdm
 except ImportError:
     tqdm = None
+
+
+def get_gpu_temperature_c():
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    first_temp = result.stdout.strip().splitlines()[0]
+    return float(first_temp)
+
+
+def wait_for_gpu_temperature(target_temp_c, sleep_seconds=15):
+    if target_temp_c is None:
+        return
+
+    temp_c = get_gpu_temperature_c()
+    while temp_c is not None and temp_c > target_temp_c:
+        print(
+            f"GPU temp {temp_c:.0f}C exceeds target {target_temp_c:.0f}C; "
+            f"pausing {sleep_seconds}s.",
+            flush=True,
+        )
+        sleep(sleep_seconds)
+        temp_c = get_gpu_temperature_c()
 
 import numpy as np
 import uproot as up
@@ -202,6 +238,10 @@ def train_model(
     show_progress=True,
     cache_images=True,
     num_workers=0,
+    use_amp=True,
+    target_gpu_temp_c=None,
+    temp_check_interval=20,
+    temp_cooldown_sleep=15,
 ):
     train_dataset = LambdaWSIDataset(
         train_events,
@@ -239,6 +279,8 @@ def train_model(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
+    amp_enabled = use_amp and device == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
     print(f"Training on {device}", flush=True)
     if show_progress and tqdm is None:
@@ -253,17 +295,22 @@ def train_model(
         if show_progress and tqdm is not None:
             train_iter = tqdm(train_loader, desc=f"Epoch {epoch+1:03d}/{n_epochs:03d} train", leave=False)
 
-        for x, z_true in train_iter:
+        for batch_idx, (x, z_true) in enumerate(train_iter):
+            if batch_idx % temp_check_interval == 0:
+                wait_for_gpu_temperature(target_gpu_temp_c, temp_cooldown_sleep)
+
             x = x.to(device, non_blocking=pin_memory)
             z_true = z_true.to(device, non_blocking=pin_memory)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
-            z_pred = model(x)
-            loss = loss_fn(z_pred, z_true)
+            with torch.cuda.amp.autocast(enabled=amp_enabled):
+                z_pred = model(x)
+                loss = loss_fn(z_pred, z_true)
 
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             train_loss += loss.item() * x.size(0)
 
@@ -284,8 +331,9 @@ def train_model(
                 x = x.to(device, non_blocking=pin_memory)
                 z_true = z_true.to(device, non_blocking=pin_memory)
 
-                z_pred = model(x)
-                loss = loss_fn(z_pred, z_true)
+                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                    z_pred = model(x)
+                    loss = loss_fn(z_pred, z_true)
 
                 val_loss += loss.item() * x.size(0)
 

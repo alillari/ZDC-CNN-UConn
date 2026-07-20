@@ -1,0 +1,23 @@
+{
+  "epochs": 40,
+  "batch_size": 64,
+  "lr": 0.0003,
+  "num_workers": 0,
+  "target": {
+    "mode": "magnitude_direction",
+    "magnitude_transform": "log",
+    "target_key": "momentum",
+    "magnitude_mean": null,
+    "magnitude_std": null,
+    "eps": 1e-08
+  },
+  "loss": {
+    "lambda_p": 1.0,
+    "lambda_dir": 1.0
+  },
+  "split_sizes": {
+    "train": 20877,
+    "val": 4474,
+    "test": 4474
+  }
+}

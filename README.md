@@ -6,6 +6,8 @@ Utilities and notebooks for reconstructing Lambda decay vertex information from 
 
 - `test_three_particle_ml.py`: dataset, image-building, geometry, and CNN training utilities.
 - `zdc_mamba_baseline.py`: supervised sparse-token ZDC Mamba baseline for momentum regression.
+- `make_zdc_momentum_splits.py`: builds train/validation/test pickle splits from the current three ROOT files.
+- `run_zdc_mamba_vs_cnn_study.py`: first apples-to-apples Conv2d versus Hilbert-Mamba momentum study script.
 - `CNN-notebook.ipynb`: exploratory CNN workflow.
 - `CNN-notebook-wsi-sipm-comparison-v3.ipynb`: WSi/SiPM comparison notebook.
 
@@ -75,6 +77,58 @@ cfg.target.mode = "magnitude_direction"    # also: "cartesian"
 reports = validate_serialization_examples(train_events, cfg.tokenization)
 model, metadata = train_zdc_mamba_baseline(train_events, val_events, cfg)
 ```
+
+To run the first direct study against a stacked Conv2d baseline with the same
+magnitude-plus-unit-direction target, prepare a pickle with explicit splits:
+
+```python
+{
+    "train": train_events,
+    "val": val_events,
+    "test": test_events,
+}
+```
+
+You can create that pickle from the current ROOT files with:
+
+```bash
+python make_zdc_momentum_splits.py \
+    --output zdc_momentum_splits.pkl
+```
+
+By default this reads:
+
+- `../HEPMC-testing/photon1_test_50000.root`
+- `../HEPMC-testing/photon2_test_50000.root`
+- `../HEPMC-testing/neutron_test_50000.root`
+
+For a quick partial build, use `--read-entries N` before acceptance cuts:
+
+```bash
+python make_zdc_momentum_splits.py \
+    --read-entries 1000 \
+    --output zdc_momentum_splits_debug.pkl
+```
+
+Then run:
+
+```bash
+python run_zdc_mamba_vs_cnn_study.py \
+    --splits-pickle zdc_momentum_splits.pkl \
+    --output-dir zdc_mamba_vs_cnn_outputs \
+    --epochs 30 \
+    --batch-size 64
+```
+
+The script trains:
+
+- `stacked_conv2d`: the current stacked WSi image architecture changed to
+  predict momentum magnitude plus a unit direction;
+- `mamba_layer_hilbert`: sparse layer-major Hilbert tokens with the same target,
+  loss weights, split, and training budget.
+
+It writes `run_config.json`, `serialization_validation.json`, model
+checkpoints, `summary.json`, and `summary_metrics.csv`.
 
 Serialization convention:
 

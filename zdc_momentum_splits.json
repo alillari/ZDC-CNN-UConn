@@ -1,0 +1,19 @@
+{
+  "photon1_file": "../HEPMC-testing/photon1_test_50000.root",
+  "photon2_file": "../HEPMC-testing/photon2_test_50000.root",
+  "neutron_file": "../HEPMC-testing/neutron_test_50000.root",
+  "collection": "ZDC_WSi_Hits",
+  "seed": 42,
+  "test_fraction": 0.15,
+  "val_fraction_of_remaining": 0.1765,
+  "rotate_to_zdc_frame": true,
+  "layer_tolerance_mm": 1.0,
+  "read_entries": null,
+  "n_events": 29825,
+  "split_sizes": {
+    "train": 20877,
+    "val": 4474,
+    "test": 4474
+  },
+  "target": "Lambda momentum = gamma1 + gamma2 + neutron MC momentum"
+}

@@ -38,6 +38,7 @@ models/
 *.pth
 *.ckpt
 *.onnx
+*.pkl
 
 # OS/editor noise
 .DS_Store

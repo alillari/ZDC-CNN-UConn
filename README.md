@@ -130,6 +130,21 @@ The script trains:
 It writes `run_config.json`, `serialization_validation.json`, model
 checkpoints, `summary.json`, and `summary_metrics.csv`.
 
+After a run finishes, generate calibration and residual-slice plots from the
+saved best checkpoints with:
+
+```bash
+python plot_zdc_momentum_diagnostics.py \
+    --splits-pickle zdc_momentum_splits.pkl \
+    --study-dir zdc_mamba_vs_cnn_outputs \
+    --split test
+```
+
+This writes `magnitude_calibration.png`,
+`magnitude_residual_distributions.png`, `binned_magnitude_residuals.png`, and
+CSV/JSON diagnostic metrics under
+`zdc_mamba_vs_cnn_outputs/momentum_diagnostics/`.
+
 Serialization convention:
 
 - deposits are aggregated by detector cell `(layer, ix, iy)`;

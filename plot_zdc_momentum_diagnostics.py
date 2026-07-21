@@ -180,6 +180,14 @@ def residual_table(pred: np.ndarray, truth: np.ndarray) -> Dict[str, np.ndarray]
     eps = 1e-8
     pred_mag = np.maximum(np.linalg.norm(pred, axis=1), eps)
     true_mag = np.maximum(np.linalg.norm(truth, axis=1), eps)
+    pred_dir = pred / pred_mag[:, None]
+    true_dir = truth / true_mag[:, None]
+    dot = np.sum(pred_dir * true_dir, axis=1).clip(-1.0, 1.0)
+    angular_mrad = np.arccos(dot) * 1000.0
+    lambda_angle_mrad = np.arctan2(
+        np.linalg.norm(truth[:, :2], axis=1),
+        truth[:, 2],
+    ) * 1000.0
     ratio = pred_mag / true_mag
     linear = pred_mag - true_mag
     relative = linear / true_mag
@@ -191,6 +199,8 @@ def residual_table(pred: np.ndarray, truth: np.ndarray) -> Dict[str, np.ndarray]
         "linear_residual": linear,
         "relative_residual": relative,
         "log_residual": log_ratio,
+        "angular_mrad": angular_mrad,
+        "lambda_angle_mrad": lambda_angle_mrad,
     }
 
 
@@ -208,6 +218,10 @@ def summarize_residuals(name: str, residuals: Mapping[str, np.ndarray]) -> Dict[
         "median_ratio": float(np.median(ratio)),
         "ratio_p16": float(np.percentile(ratio, 16)),
         "ratio_p84": float(np.percentile(ratio, 84)),
+        "angular_mrad_mean": float(np.mean(residuals["angular_mrad"])),
+        "angular_mrad_rms": float(np.std(residuals["angular_mrad"])),
+        "angular_mrad_p68": float(np.percentile(residuals["angular_mrad"], 68)),
+        "angular_mrad_p95": float(np.percentile(residuals["angular_mrad"], 95)),
     }
 
 
@@ -224,6 +238,10 @@ def write_metrics(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
         "median_ratio",
         "ratio_p16",
         "ratio_p84",
+        "angular_mrad_mean",
+        "angular_mrad_rms",
+        "angular_mrad_p68",
+        "angular_mrad_p95",
     ]
     with path.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
@@ -260,6 +278,37 @@ def binned_mean(x: np.ndarray, y: np.ndarray, n_bins: int) -> Tuple[np.ndarray, 
         means.append(float(np.mean(vals)))
         errors.append(float(np.std(vals) / np.sqrt(vals.size)))
     return np.asarray(centers), np.asarray(means), np.asarray(errors)
+
+
+def binned_angular_resolution(
+    lambda_angle_mrad: np.ndarray,
+    angular_mrad: np.ndarray,
+    n_bins: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    finite = np.isfinite(lambda_angle_mrad) & np.isfinite(angular_mrad)
+    x = lambda_angle_mrad[finite]
+    y = angular_mrad[finite]
+    edges = np.quantile(x, np.linspace(0.0, 1.0, n_bins + 1))
+    edges = np.unique(edges)
+    centers = []
+    mean_values = []
+    rms_values = []
+    p68_values = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        mask = (x >= lo) & (x <= hi)
+        if mask.sum() < 3:
+            continue
+        vals = y[mask]
+        centers.append(float(np.median(x[mask])))
+        mean_values.append(float(np.mean(vals)))
+        rms_values.append(float(np.std(vals)))
+        p68_values.append(float(np.percentile(vals, 68)))
+    return (
+        np.asarray(centers),
+        np.asarray(mean_values),
+        np.asarray(rms_values),
+        np.asarray(p68_values),
+    )
 
 
 def plot_calibration(path: Path, model_residuals: Mapping[str, Mapping[str, np.ndarray]]) -> None:
@@ -357,6 +406,67 @@ def plot_binned_residuals(
     plt.close(fig)
 
 
+def plot_integrated_angular_resolution(
+    path: Path,
+    model_residuals: Mapping[str, Mapping[str, np.ndarray]],
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 5))
+    lo, hi = finite_range([res["angular_mrad"] for res in model_residuals.values()], 0.0, 99.5)
+    bins = np.linspace(max(0.0, lo), hi, 90)
+    for name, res in model_residuals.items():
+        angular = res["angular_mrad"]
+        label = (
+            f"{MODEL_LABELS.get(name, name)} "
+            f"mean={np.mean(angular):.3f} mrad, "
+            f"rms={np.std(angular):.3f} mrad"
+        )
+        ax.hist(
+            angular,
+            bins=bins,
+            histtype="step",
+            density=True,
+            linewidth=1.8,
+            label=label,
+        )
+    ax.set_xlabel("angular separation [mrad]")
+    ax.set_ylabel("density")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def plot_angular_resolution_vs_lambda_angle(
+    path: Path,
+    model_residuals: Mapping[str, Mapping[str, np.ndarray]],
+    n_bins: int,
+    centerline_mrad: float,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharex=True)
+    for name, res in model_residuals.items():
+        centers, means, rms_values, p68_values = binned_angular_resolution(
+            res["lambda_angle_mrad"],
+            res["angular_mrad"],
+            n_bins,
+        )
+        label = MODEL_LABELS.get(name, name)
+        axes[0].plot(centers, means, marker="o", linewidth=1.5, label=label)
+        axes[1].plot(centers, p68_values, marker="o", linewidth=1.5, label=f"{label} p68")
+        axes[1].plot(centers, rms_values, marker="s", linewidth=1.2, linestyle="--", label=f"{label} rms")
+
+    for ax in axes:
+        ax.axvline(centerline_mrad, color="black", linewidth=1.2, linestyle=":")
+        ax.set_xlabel("true Lambda angle from +z [mrad]")
+        ax.legend()
+    axes[0].set_ylabel("mean angular separation [mrad]")
+    axes[1].set_ylabel("angular resolution [mrad]")
+    axes[0].set_title("Integrated in equal-population angle bins")
+    axes[1].set_title("p68 and RMS by Lambda angle")
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--splits-pickle", type=Path, required=True)
@@ -368,6 +478,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--models", nargs="+", choices=tuple(MODEL_LABELS), default=tuple(MODEL_LABELS))
     parser.add_argument("--bins", type=int, default=12)
+    parser.add_argument("--centerline-mrad", type=float, default=15.0)
     return parser
 
 
@@ -438,6 +549,16 @@ def main() -> None:
         observables,
         model_residuals,
         args.bins,
+    )
+    plot_integrated_angular_resolution(
+        output_dir / "angular_resolution_integrated.png",
+        model_residuals,
+    )
+    plot_angular_resolution_vs_lambda_angle(
+        output_dir / "angular_resolution_vs_lambda_angle.png",
+        model_residuals,
+        args.bins,
+        args.centerline_mrad,
     )
     print(f"Wrote momentum diagnostics for {args.split} split to {output_dir}", flush=True)
 

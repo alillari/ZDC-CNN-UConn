@@ -327,12 +327,15 @@ def train_cnn_baseline(
                 checkpoint_path,
             )
 
+    best_checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(best_checkpoint["model_state_dict"])
     metadata = {
         "model": "StackedWSICNNMomentumRegressor",
         "parameter_count": count_parameters(model),
         "checkpoint_path": str(checkpoint_path),
         "history": history,
         "best_val_loss": best_val,
+        "returned_checkpoint": "best_val",
     }
     return model, metadata
 

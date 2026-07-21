@@ -978,7 +978,12 @@ def train_zdc_mamba_baseline(
                 checkpoint_path,
             )
 
+    if checkpoint_path:
+        best_checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(best_checkpoint["model_state_dict"])
+        metadata["returned_checkpoint"] = "best_val"
     metadata["history"] = history
+    metadata["best_val_loss"] = best_val
     return model, metadata
 
 

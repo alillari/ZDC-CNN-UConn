@@ -450,6 +450,7 @@ def summarize_predictions(
 ) -> Dict[str, object]:
     diag = momentum_diagnostics(predicted_momentum, truth_momentum)
     cart = diag["cartesian_residual"].numpy()
+    angular_mrad = diag["angular_separation_rad"] * 1000.0
     summary = {
         "n_events": int(truth_momentum.shape[0]),
         "magnitude_bias": float(diag["magnitude_residual"].mean().item()),
@@ -461,9 +462,12 @@ def summarize_predictions(
             diag["relative_magnitude_residual"].std().item()
         ),
         "angular_resolution_mrad_rms": float(
-            diag["angular_separation_rad"].std().item() * 1000.0
+            torch.sqrt(torch.mean(angular_mrad.square())).item()
         ),
-        "angular_mrad_mean": float(diag["angular_separation_rad"].mean().item() * 1000.0),
+        "angular_mrad_std": float(angular_mrad.std().item()),
+        "angular_mrad_mean": float(angular_mrad.mean().item()),
+        "angular_mrad_p68": float(torch.quantile(angular_mrad, 0.68).item()),
+        "angular_mrad_p95": float(torch.quantile(angular_mrad, 0.95).item()),
         "tx_residual_rms": float(diag["tx_residual"].std().item()),
         "ty_residual_rms": float(diag["ty_residual"].std().item()),
         "cartesian_residual_bias": {
@@ -523,7 +527,10 @@ def write_summary_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
         "relative_magnitude_bias",
         "relative_magnitude_resolution_rms",
         "angular_mrad_mean",
+        "angular_mrad_std",
         "angular_resolution_mrad_rms",
+        "angular_mrad_p68",
+        "angular_mrad_p95",
         "tx_residual_rms",
         "ty_residual_rms",
     ]

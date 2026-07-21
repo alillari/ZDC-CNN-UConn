@@ -206,6 +206,7 @@ def residual_table(pred: np.ndarray, truth: np.ndarray) -> Dict[str, np.ndarray]
 
 def summarize_residuals(name: str, residuals: Mapping[str, np.ndarray]) -> Dict[str, float]:
     ratio = residuals["ratio"]
+    angular = residuals["angular_mrad"]
     return {
         "model": name,
         "n_events": int(ratio.size),
@@ -218,10 +219,11 @@ def summarize_residuals(name: str, residuals: Mapping[str, np.ndarray]) -> Dict[
         "median_ratio": float(np.median(ratio)),
         "ratio_p16": float(np.percentile(ratio, 16)),
         "ratio_p84": float(np.percentile(ratio, 84)),
-        "angular_mrad_mean": float(np.mean(residuals["angular_mrad"])),
-        "angular_mrad_rms": float(np.std(residuals["angular_mrad"])),
-        "angular_mrad_p68": float(np.percentile(residuals["angular_mrad"], 68)),
-        "angular_mrad_p95": float(np.percentile(residuals["angular_mrad"], 95)),
+        "angular_mrad_mean": float(np.mean(angular)),
+        "angular_mrad_std": float(np.std(angular)),
+        "angular_mrad_rms": float(np.sqrt(np.mean(np.square(angular)))),
+        "angular_mrad_p68": float(np.percentile(angular, 68)),
+        "angular_mrad_p95": float(np.percentile(angular, 95)),
     }
 
 
@@ -239,6 +241,7 @@ def write_metrics(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
         "ratio_p16",
         "ratio_p84",
         "angular_mrad_mean",
+        "angular_mrad_std",
         "angular_mrad_rms",
         "angular_mrad_p68",
         "angular_mrad_p95",
@@ -301,7 +304,7 @@ def binned_angular_resolution(
         vals = y[mask]
         centers.append(float(np.median(x[mask])))
         mean_values.append(float(np.mean(vals)))
-        rms_values.append(float(np.std(vals)))
+        rms_values.append(float(np.sqrt(np.mean(np.square(vals)))))
         p68_values.append(float(np.percentile(vals, 68)))
     return (
         np.asarray(centers),
@@ -418,7 +421,7 @@ def plot_integrated_angular_resolution(
         label = (
             f"{MODEL_LABELS.get(name, name)} "
             f"mean={np.mean(angular):.3f} mrad, "
-            f"rms={np.std(angular):.3f} mrad"
+            f"rms={np.sqrt(np.mean(np.square(angular))):.3f} mrad"
         )
         ax.hist(
             angular,

@@ -143,7 +143,9 @@ python plot_zdc_momentum_diagnostics.py \
 This writes `magnitude_calibration.png`,
 `magnitude_residual_distributions.png`, `binned_magnitude_residuals.png`,
 `angular_resolution_integrated.png`,
-`angular_resolution_vs_lambda_angle.png`, and CSV/JSON diagnostic metrics under
+`signed_angular_core_gaussian_fit.png`,
+`angular_resolution_vs_lambda_angle.png`,
+`angular_resolution_vs_lambda_energy.png`, and CSV/JSON diagnostic metrics under
 `zdc_mamba_vs_cnn_outputs/momentum_diagnostics/`.
 
 Serialization convention:

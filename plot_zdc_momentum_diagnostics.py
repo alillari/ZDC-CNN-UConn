@@ -46,6 +46,7 @@ MODEL_LABELS = {
     "stacked_conv2d": "Stacked Conv2d",
     "mamba_layer_hilbert": "Layer-Hilbert Mamba",
 }
+LAMBDA_MASS_GEV = 1.115683
 
 
 def build_config(run_config: Mapping[str, object], mamba_checkpoint: Optional[Mapping[str, object]]) -> ZDCMambaConfig:
@@ -153,13 +154,19 @@ def predict_mamba(
     return np.concatenate(predictions, axis=0), np.concatenate(truth, axis=0)
 
 
-def event_observables(events: Sequence[Mapping[str, object]], cfg: ZDCMambaConfig) -> Dict[str, np.ndarray]:
+def event_observables(
+    events: Sequence[Mapping[str, object]],
+    cfg: ZDCMambaConfig,
+    lambda_mass_gev: float,
+) -> Dict[str, np.ndarray]:
     true_p = np.stack(
         [extract_momentum_target(event, cfg.target.target_key) for event in events],
         axis=0,
     ).astype(np.float64)
+    true_magnitude = np.linalg.norm(true_p, axis=1)
     values = {
-        "true_magnitude": np.linalg.norm(true_p, axis=1),
+        "true_magnitude": true_magnitude,
+        "lambda_energy": np.sqrt(np.square(true_magnitude) + lambda_mass_gev**2),
         "total_wsi_energy": np.zeros(len(events), dtype=np.float64),
         "neutron_wsi_energy": np.zeros(len(events), dtype=np.float64),
     }
@@ -176,7 +183,11 @@ def event_observables(events: Sequence[Mapping[str, object]], cfg: ZDCMambaConfi
     return values
 
 
-def residual_table(pred: np.ndarray, truth: np.ndarray) -> Dict[str, np.ndarray]:
+def residual_table(
+    pred: np.ndarray,
+    truth: np.ndarray,
+    lambda_mass_gev: float,
+) -> Dict[str, np.ndarray]:
     eps = 1e-8
     pred_mag = np.maximum(np.linalg.norm(pred, axis=1), eps)
     true_mag = np.maximum(np.linalg.norm(truth, axis=1), eps)
@@ -184,10 +195,22 @@ def residual_table(pred: np.ndarray, truth: np.ndarray) -> Dict[str, np.ndarray]
     true_dir = truth / true_mag[:, None]
     dot = np.sum(pred_dir * true_dir, axis=1).clip(-1.0, 1.0)
     angular_mrad = np.arccos(dot) * 1000.0
+    z_axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    delta_dir = pred_dir - true_dir
+    basis_u = np.cross(z_axis[None, :], true_dir)
+    basis_u_norm = np.linalg.norm(basis_u, axis=1)
+    near_z = basis_u_norm < eps
+    basis_u[near_z] = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    basis_u_norm[near_z] = 1.0
+    basis_u = basis_u / basis_u_norm[:, None]
+    basis_v = np.cross(true_dir, basis_u)
+    delta_u_mrad = np.sum(delta_dir * basis_u, axis=1) * 1000.0
+    delta_v_mrad = np.sum(delta_dir * basis_v, axis=1) * 1000.0
     lambda_angle_mrad = np.arctan2(
         np.linalg.norm(truth[:, :2], axis=1),
         truth[:, 2],
     ) * 1000.0
+    lambda_energy = np.sqrt(np.square(true_mag) + lambda_mass_gev**2)
     ratio = pred_mag / true_mag
     linear = pred_mag - true_mag
     relative = linear / true_mag
@@ -200,13 +223,51 @@ def residual_table(pred: np.ndarray, truth: np.ndarray) -> Dict[str, np.ndarray]
         "relative_residual": relative,
         "log_residual": log_ratio,
         "angular_mrad": angular_mrad,
+        "delta_u_mrad": delta_u_mrad,
+        "delta_v_mrad": delta_v_mrad,
         "lambda_angle_mrad": lambda_angle_mrad,
+        "lambda_energy": lambda_energy,
     }
+
+
+def gaussian_core_fit(values: np.ndarray) -> Dict[str, float]:
+    finite = values[np.isfinite(values)]
+    if finite.size < 20:
+        return {"mu": float("nan"), "sigma": float("nan"), "ok": 0.0}
+
+    lo = float(np.percentile(finite, 1.0))
+    hi = float(np.percentile(finite, 99.0))
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        return {"mu": float(np.mean(finite)), "sigma": float(np.std(finite)), "ok": 0.0}
+
+    counts, edges = np.histogram(finite, bins=80, range=(lo, hi))
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    if counts.max(initial=0) <= 0:
+        return {"mu": float(np.mean(finite)), "sigma": float(np.std(finite)), "ok": 0.0}
+
+    min_count = max(3.0, 0.2 * float(counts.max()))
+    core = counts >= min_count
+    if core.sum() < 5:
+        return {"mu": float(np.mean(finite)), "sigma": float(np.std(finite)), "ok": 0.0}
+
+    coeff = np.polyfit(centers[core], np.log(counts[core]), deg=2)
+    a, b, _ = coeff
+    if a >= 0.0:
+        return {"mu": float(np.mean(finite)), "sigma": float(np.std(finite)), "ok": 0.0}
+
+    sigma = float(np.sqrt(-1.0 / (2.0 * a)))
+    mu = float(b * sigma * sigma)
+    return {"mu": mu, "sigma": sigma, "ok": 1.0}
 
 
 def summarize_residuals(name: str, residuals: Mapping[str, np.ndarray]) -> Dict[str, float]:
     ratio = residuals["ratio"]
     angular = residuals["angular_mrad"]
+    core_u = gaussian_core_fit(residuals["delta_u_mrad"])
+    core_v = gaussian_core_fit(residuals["delta_v_mrad"])
+    core_pooled = gaussian_core_fit(
+        np.concatenate([residuals["delta_u_mrad"], residuals["delta_v_mrad"]])
+    )
     return {
         "model": name,
         "n_events": int(ratio.size),
@@ -224,6 +285,11 @@ def summarize_residuals(name: str, residuals: Mapping[str, np.ndarray]) -> Dict[
         "angular_mrad_rms": float(np.sqrt(np.mean(np.square(angular)))),
         "angular_mrad_p68": float(np.percentile(angular, 68)),
         "angular_mrad_p95": float(np.percentile(angular, 95)),
+        "signed_delta_u_mrad_gauss_mu": core_u["mu"],
+        "signed_delta_u_mrad_gauss_sigma": core_u["sigma"],
+        "signed_delta_v_mrad_gauss_mu": core_v["mu"],
+        "signed_delta_v_mrad_gauss_sigma": core_v["sigma"],
+        "signed_delta_pooled_mrad_gauss_sigma": core_pooled["sigma"],
     }
 
 
@@ -245,6 +311,11 @@ def write_metrics(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
         "angular_mrad_rms",
         "angular_mrad_p68",
         "angular_mrad_p95",
+        "signed_delta_u_mrad_gauss_mu",
+        "signed_delta_u_mrad_gauss_sigma",
+        "signed_delta_v_mrad_gauss_mu",
+        "signed_delta_v_mrad_gauss_sigma",
+        "signed_delta_pooled_mrad_gauss_sigma",
     ]
     with path.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
@@ -312,6 +383,34 @@ def binned_angular_resolution(
         np.asarray(rms_values),
         np.asarray(p68_values),
     )
+
+
+def binned_gaussian_core_width(
+    bin_variable: np.ndarray,
+    delta_u_mrad: np.ndarray,
+    delta_v_mrad: np.ndarray,
+    n_bins: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    finite = (
+        np.isfinite(bin_variable)
+        & np.isfinite(delta_u_mrad)
+        & np.isfinite(delta_v_mrad)
+    )
+    x = bin_variable[finite]
+    u = delta_u_mrad[finite]
+    v = delta_v_mrad[finite]
+    edges = np.quantile(x, np.linspace(0.0, 1.0, n_bins + 1))
+    edges = np.unique(edges)
+    centers = []
+    sigmas = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        mask = (x >= lo) & (x <= hi)
+        if mask.sum() < 20:
+            continue
+        fit = gaussian_core_fit(np.concatenate([u[mask], v[mask]]))
+        centers.append(float(np.median(x[mask])))
+        sigmas.append(fit["sigma"])
+    return np.asarray(centers), np.asarray(sigmas)
 
 
 def plot_calibration(path: Path, model_residuals: Mapping[str, Mapping[str, np.ndarray]]) -> None:
@@ -439,32 +538,143 @@ def plot_integrated_angular_resolution(
     plt.close(fig)
 
 
+def plot_signed_angular_core_fit(
+    path: Path,
+    model_residuals: Mapping[str, Mapping[str, np.ndarray]],
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 5))
+    pooled_values = [
+        np.concatenate([res["delta_u_mrad"], res["delta_v_mrad"]])
+        for res in model_residuals.values()
+    ]
+    lo, hi = finite_range(pooled_values, 0.5, 99.5)
+    limit = max(abs(lo), abs(hi))
+    bins = np.linspace(-limit, limit, 100)
+    x = np.linspace(-limit, limit, 400)
+    for name, res in model_residuals.items():
+        values = np.concatenate([res["delta_u_mrad"], res["delta_v_mrad"]])
+        fit = gaussian_core_fit(values)
+        label = (
+            f"{MODEL_LABELS.get(name, name)} "
+            f"sigma_core={fit['sigma']:.3f} mrad"
+        )
+        counts, _, _ = ax.hist(
+            values,
+            bins=bins,
+            histtype="step",
+            density=True,
+            linewidth=1.8,
+            label=label,
+        )
+        if np.isfinite(fit["sigma"]) and fit["sigma"] > 0.0:
+            norm = 1.0 / (fit["sigma"] * np.sqrt(2.0 * np.pi))
+            y = norm * np.exp(-0.5 * np.square((x - fit["mu"]) / fit["sigma"]))
+            ax.plot(x, y, linewidth=1.2, linestyle="--")
+    ax.axvline(0.0, color="black", linewidth=1.0)
+    ax.set_xlabel("signed transverse angular residual [mrad]")
+    ax.set_ylabel("density")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def plot_angular_resolution_vs_lambda_angle(
     path: Path,
     model_residuals: Mapping[str, Mapping[str, np.ndarray]],
     n_bins: int,
     centerline_mrad: float,
 ) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharex=True)
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5), sharex=True)
     for name, res in model_residuals.items():
         centers, means, rms_values, p68_values = binned_angular_resolution(
             res["lambda_angle_mrad"],
             res["angular_mrad"],
             n_bins,
         )
+        core_centers, core_sigmas = binned_gaussian_core_width(
+            res["lambda_angle_mrad"],
+            res["delta_u_mrad"],
+            res["delta_v_mrad"],
+            n_bins,
+        )
         label = MODEL_LABELS.get(name, name)
         axes[0].plot(centers, means, marker="o", linewidth=1.5, label=label)
         axes[1].plot(centers, p68_values, marker="o", linewidth=1.5, label=f"{label} p68")
         axes[1].plot(centers, rms_values, marker="s", linewidth=1.2, linestyle="--", label=f"{label} rms")
+        axes[2].plot(core_centers, core_sigmas, marker="o", linewidth=1.5, label=label)
 
     for ax in axes:
         ax.axvline(centerline_mrad, color="black", linewidth=1.2, linestyle=":")
         ax.set_xlabel("true Lambda angle from +z [mrad]")
         ax.legend()
     axes[0].set_ylabel("mean angular separation [mrad]")
-    axes[1].set_ylabel("angular resolution [mrad]")
-    axes[0].set_title("Integrated in equal-population angle bins")
-    axes[1].set_title("p68 and RMS by Lambda angle")
+    axes[1].set_ylabel("opening-angle scale [mrad]")
+    axes[2].set_ylabel("Gaussian core sigma [mrad]")
+    axes[0].set_title("Unsigned opening angle")
+    axes[1].set_title("Opening-angle p68 and RMS")
+    axes[2].set_title("Signed transverse residual fit")
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def plot_angular_resolution_vs_lambda_energy(
+    path: Path,
+    model_residuals: Mapping[str, Mapping[str, np.ndarray]],
+    n_bins: int,
+    stochastic_mrad_sqrt_gev: float,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharex=True)
+    all_centers = []
+    for name, res in model_residuals.items():
+        centers, sigmas = binned_gaussian_core_width(
+            res["lambda_energy"],
+            res["delta_u_mrad"],
+            res["delta_v_mrad"],
+            n_bins,
+        )
+        label = MODEL_LABELS.get(name, name)
+        all_centers.append(centers)
+        axes[0].plot(centers, sigmas, marker="o", linewidth=1.5, label=label)
+        axes[1].plot(
+            centers,
+            sigmas * np.sqrt(np.maximum(centers, 1e-12)),
+            marker="o",
+            linewidth=1.5,
+            label=label,
+        )
+
+    finite_energy_parts = [x[np.isfinite(x)] for x in all_centers if x.size]
+    if finite_energy_parts:
+        finite_energy = np.concatenate(finite_energy_parts)
+        e_min = float(np.min(finite_energy))
+        e_max = float(np.max(finite_energy))
+        e_grid = np.linspace(e_min, e_max, 200)
+        axes[0].plot(
+            e_grid,
+            stochastic_mrad_sqrt_gev / np.sqrt(np.maximum(e_grid, 1e-12)),
+            color="black",
+            linestyle=":",
+            linewidth=1.3,
+            label=f"{stochastic_mrad_sqrt_gev:g} mrad / sqrt(E)",
+        )
+        axes[1].axhline(
+            stochastic_mrad_sqrt_gev,
+            color="black",
+            linestyle=":",
+            linewidth=1.3,
+            label=f"{stochastic_mrad_sqrt_gev:g} mrad sqrt(GeV)",
+        )
+
+    axes[0].set_xlabel("true Lambda energy [GeV]")
+    axes[1].set_xlabel("true Lambda energy [GeV]")
+    axes[0].set_ylabel("Gaussian core sigma [mrad]")
+    axes[1].set_ylabel("sigma * sqrt(E) [mrad sqrt(GeV)]")
+    axes[0].set_title("Signed transverse residual fit")
+    axes[1].set_title("Stochastic-term scaling check")
+    for ax in axes:
+        ax.legend()
     fig.tight_layout()
     fig.savefig(path, dpi=180)
     plt.close(fig)
@@ -482,6 +692,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", nargs="+", choices=tuple(MODEL_LABELS), default=tuple(MODEL_LABELS))
     parser.add_argument("--bins", type=int, default=12)
     parser.add_argument("--centerline-mrad", type=float, default=15.0)
+    parser.add_argument("--lambda-mass-gev", type=float, default=LAMBDA_MASS_GEV)
+    parser.add_argument("--stochastic-reference", type=float, default=3.0)
     return parser
 
 
@@ -523,7 +735,7 @@ def main() -> None:
             args.num_workers,
             device,
         )
-        model_residuals["stacked_conv2d"] = residual_table(pred, truth)
+        model_residuals["stacked_conv2d"] = residual_table(pred, truth, args.lambda_mass_gev)
         metrics.append(summarize_residuals("stacked_conv2d", model_residuals["stacked_conv2d"]))
 
     if "mamba_layer_hilbert" in args.models:
@@ -537,10 +749,10 @@ def main() -> None:
             args.num_workers,
             device,
         )
-        model_residuals["mamba_layer_hilbert"] = residual_table(pred, truth)
+        model_residuals["mamba_layer_hilbert"] = residual_table(pred, truth, args.lambda_mass_gev)
         metrics.append(summarize_residuals("mamba_layer_hilbert", model_residuals["mamba_layer_hilbert"]))
 
-    observables = event_observables(split_events, cfg)
+    observables = event_observables(split_events, cfg, args.lambda_mass_gev)
     write_metrics(output_dir / "momentum_diagnostic_metrics.csv", metrics)
     with (output_dir / "momentum_diagnostic_metrics.json").open("w") as stream:
         json.dump({"split": args.split, "metrics": metrics}, stream, indent=2)
@@ -557,11 +769,21 @@ def main() -> None:
         output_dir / "angular_resolution_integrated.png",
         model_residuals,
     )
+    plot_signed_angular_core_fit(
+        output_dir / "signed_angular_core_gaussian_fit.png",
+        model_residuals,
+    )
     plot_angular_resolution_vs_lambda_angle(
         output_dir / "angular_resolution_vs_lambda_angle.png",
         model_residuals,
         args.bins,
         args.centerline_mrad,
+    )
+    plot_angular_resolution_vs_lambda_energy(
+        output_dir / "angular_resolution_vs_lambda_energy.png",
+        model_residuals,
+        args.bins,
+        args.stochastic_reference,
     )
     print(f"Wrote momentum diagnostics for {args.split} split to {output_dir}", flush=True)
 

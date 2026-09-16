@@ -3,8 +3,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 build/
 dist/
 *.egg-info/
@@ -15,6 +20,8 @@ venv/
 env/
 .env
 .env.*
+.python-version
+.direnv/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -28,17 +35,36 @@ env/
 *.pdf
 data/
 datasets/
+prepared/
+ninja_datasets/
 outputs/
 results/
 runs/
 logs/
 checkpoints/
 models/
+campaigns/
+artifacts/
+reports/
+plots/
+tensorboard/
+lightning_logs/
+wandb/
+mlruns/
+profiling/
+*.ninja
+*.npy
+*.npz
 *.pt
 *.pth
 *.ckpt
 *.onnx
 *.pkl
+*.log
+*.out
+*.err
+*.pid
+*.tmp
 
 # OS/editor noise
 .DS_Store

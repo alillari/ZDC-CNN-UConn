@@ -1,0 +1,31 @@
+seed: 20260916
+data:
+  photon_files: [] # Set two ROOT paths; photon-1 and photon-2 files are grouped by source event id.
+  output_dir: datasets/photon_v1
+  wsi_collection: ZDC_WSi_Hits
+  sipm_collection: HcalFarForwardZDCHits
+  rotation_theta_rad: 0.025
+  audit_entries: 1000
+  chunk_entries: 1000
+  min_positive_energy: 0.0
+split:
+  train_fraction: 0.70
+  val_fraction: 0.15
+model:
+  dim: 128
+  layers: 6
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  dropout: 0.1
+  max_tokens: 2048
+training:
+  epochs: 40
+  batch_size: 16
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  num_workers: 0
+  device: auto
+evaluation:
+  energy_bins_gev: [100.0, 116.6667, 133.3333, 150.0, 166.6667, 183.3333, 200.0, 216.6667, 233.3333, 250.0, 266.6667, 283.3333, 300.0]
+  min_fit_events: 200

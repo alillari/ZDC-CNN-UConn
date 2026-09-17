@@ -7,6 +7,7 @@ import uproot
 
 from zdc_momentum.data import ZDCDataset, audit_root, prepare_dataset
 from zdc_momentum.ninja import build_photon_ninja
+from zdc_momentum.ninja_dataset import NinjaPhotonDataset, fit_statistics
 import mmap_ninja
 
 
@@ -45,3 +46,18 @@ class PrepareSmokeTest(unittest.TestCase):
         self.assertEqual(len(features), len(detector))
         self.assertEqual(len(features[0]), len(detector[0]))
         self.assertTrue((output / "_SUCCESS").exists())
+
+    def test_ninja_loader_statistics_and_serialization(self):
+        root = Path(tempfile.mkdtemp(prefix="zdc-ninja-loader-test-"))
+        source = root / "p1.root"
+        with uproot.recreate(source) as stream:
+            stream["events"] = _branches()
+        output = build_photon_ninja(source, root / "ninja", max_events=3, chunk_entries=2)
+        statistics = fit_statistics([str(output)], seed=1, train_fraction=.7, val_fraction=.15)
+        dataset = NinjaPhotonDataset([str(output)], 0, 1, .7, .15, statistics, max_tokens=2)
+        tokens, target, summary = dataset[0]
+        self.assertEqual(tokens.shape[1], 5)
+        self.assertLessEqual(len(tokens), 2)
+        self.assertEqual(target.shape, (3,))
+        self.assertEqual(summary.shape, (4,))
+        self.assertEqual(len(statistics["coordinate_min"]), 2)

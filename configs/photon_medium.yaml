@@ -1,0 +1,43 @@
+# GPU-visible intermediate run: substantial enough to judge energy resolution,
+# still bounded for the 4 GB RTX 3050 Ti laptop GPU.
+seed: 20260916
+data:
+  photon_files: []
+  output_dir: datasets/photon_v1
+  ninja_roots:
+    - datasets/photon_ninja_v1/photon1
+    - datasets/photon_ninja_v1/photon2
+  max_events_per_split: {train: 8192, val: 2048, test: 2048}
+  wsi_collection: ZDC_WSi_Hits
+  sipm_collection: HcalFarForwardZDCHits
+  rotation_theta_rad: 0.025
+  audit_entries: 1000
+  chunk_entries: 1000
+  min_positive_energy: 0.0
+split:
+  train_fraction: 0.70
+  val_fraction: 0.15
+model:
+  dim: 96
+  layers: 4
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  dropout: 0.1
+  max_tokens: 512
+  position_frequencies: 2
+  input_normalization: layernorm
+  event_summary: none
+training:
+  epochs: 20
+  batch_size: 16
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  num_workers: 0
+  device: cuda
+  loss: huber
+  energy_objective: log
+  relative_energy_scale: 0.10 # Unused for log; fixed fractional Huber scale for the relative ablation.
+evaluation:
+  energy_bins_gev: [0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 65.0]
+  min_fit_events: 100

@@ -153,7 +153,7 @@ def prepare_dataset(config: dict[str, Any]) -> Path:
 
 
 class ZDCDataset(Dataset):
-    def __init__(self, root: str | Path, split: int, max_tokens: int):
+    def __init__(self, root: str | Path, split: int, max_tokens: int | None):
         root = Path(root)
         self.features = np.load(root / "features.npy", mmap_mode="r")
         self.offsets = np.load(root / "offsets.npy", mmap_mode="r")
@@ -167,7 +167,7 @@ class ZDCDataset(Dataset):
 
     def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
         event = int(self.indices[index]); values = _aggregate_cells(np.asarray(self.features[self.offsets[event]:self.offsets[event + 1]], dtype=np.float32))
-        if len(values) > self.max_tokens: values = _compress_tokens(values, self.max_tokens)
+        if self.max_tokens is not None and len(values) > self.max_tokens: values = _compress_tokens(values, self.max_tokens)
         return values, np.asarray(self.targets[event], dtype=np.float32)
 
 

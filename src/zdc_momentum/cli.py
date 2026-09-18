@@ -3,12 +3,20 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
+import sys
 import yaml
 
 from .config import load_config
 from .data import audit_root, prepare_dataset
 from .evaluate import evaluate
 from .sum_baseline import fit_sum_baseline
+
+
+def _render_diagnostics(run_dir: str | Path) -> None:
+    """Render the standard plots after every successful evaluation."""
+    script = Path(__file__).resolve().parents[2] / "scripts" / "plot_zdc_photon_diagnostics.py"
+    subprocess.run([sys.executable, str(script), str(run_dir)], check=True)
 from .train import train
 
 
@@ -29,7 +37,10 @@ def main() -> None:
         print(json.dumps(report, indent=2))
     elif args.command == "prepare": print(prepare_dataset(config))
     elif args.command == "train": print(train(config, args.run_dir))
-    elif args.command == "evaluate": print(evaluate(config, args.run_dir))
+    elif args.command == "evaluate":
+        run_dir = evaluate(config, args.run_dir)
+        _render_diagnostics(run_dir)
+        print(run_dir)
     elif args.command == "sum-baseline": print(fit_sum_baseline(config, args.run_dir))
     else:
         root = Path(args.output_dir); root.mkdir(parents=True, exist_ok=True)
